@@ -362,13 +362,9 @@ local rotate_door = function (door, direction)
 end
 
 
-----------------------------------------------------------------------------------------------------
--- When creating new gate pieces use this as the "on_rightclick" method of their node definitions
--- if you want the player to be able to trigger the gate by clicking on that particular node.
--- If you just want the node to move with the gate and not trigger it this isn't necessary,
--- only the "castle_gate" group is needed for that.
 
-castle_gates.trigger_gate = function(pos, node, player)
+
+castle_gates.process_gate = function(pos, node, player)
 	if not player or not player:get_pos() then
 		return -- Player left; invalid ObjectRef
 	end
@@ -440,10 +436,20 @@ castle_gates.trigger_gate = function(pos, node, player)
 			minetest.after(1, function(player_name)
 				-- Get current player ObjectRef (nil when gone)
 				if door.all[1] then -- Prevent crashes if gate got deleted (e.g. worldedit)
-					castle_gates.trigger_gate(door.all[1].pos, door.all[1].node,
+					castle_gates.process_gate(door.all[1].pos, door.all[1].node,
 						minetest.get_player_by_name(player_name))
 				end
 			end, player:get_player_name())
 		end
 	end
+end
+
+
+----------------------------------------------------------------------------------------------------
+-- When creating new gate pieces use this as the "on_rightclick" method of their node definitions
+-- if you want the player to be able to trigger the gate by clicking on that particular node.
+-- If you just want the node to move with the gate and not trigger it this isn't necessary,
+-- only the "castle_gate" group is needed for that.
+castle_gates.trigger_gate = function (pos, node, player)
+	return castle_gates.process_gate(pos, node, player)
 end
