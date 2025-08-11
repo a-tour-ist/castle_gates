@@ -364,7 +364,7 @@ end
 
 
 
-castle_gates.process_gate = function(pos, node, player)
+castle_gates.process_gate = function(pos, node, player, moving_direction)
 	if not player or not player:get_pos() then
 		return -- Player left; invalid ObjectRef
 	end
@@ -377,59 +377,51 @@ castle_gates.process_gate = function(pos, node, player)
 		end
 
 		local door_moved = false
-		if door.can_slide ~= nil then -- this is a sliding door
-			if door.previous_move == "top" and door.can_slide.top then
-				slide_gate(door, "top")
-				door_moved = true
-			elseif door.previous_move == "bottom" and door.can_slide.bottom then
-				slide_gate(door, "bottom")
-				door_moved = true
-			elseif door.previous_move == "left" and door.can_slide.left then
-				slide_gate(door, "left")
-				door_moved = true
-			elseif door.previous_move == "right" and door.can_slide.right then
-				slide_gate(door, "right")
-				door_moved = true
-			end
-
-			if not door_moved then -- reverse door's direction for next time
-				if door.previous_move == "top" and door.can_slide.bottom then
-					door.previous_move = "bottom"
+		-- this door was just triggered
+		if not moving_direction then
+			if door.can_slide ~= nil then
+				if door.previous_move and door.can_slide[door.previous_move] then
+					moving_direction = door.previous_move
+				elseif door.previous_move == "top" and door.can_slide.bottom then
+					moving_direction = "bottom"
 				elseif door.previous_move == "bottom" and door.can_slide.top then
-					door.previous_move = "top"
+					moving_direction = "top"
 				elseif door.previous_move == "left" and door.can_slide.right then
-					door.previous_move = "right"
+					moving_direction = "right"
 				elseif door.previous_move == "right" and door.can_slide.left then
-					door.previous_move = "left"
+					moving_direction = "left"
 				else
 					-- find any open direction
 					for slide_dir, enabled in pairs(door.can_slide) do
 						if enabled then
-							door.previous_move = slide_dir
+							moving_direction = slide_dir
 							break
 						end
 					end
 				end
-			end
-		elseif door.hinge ~= nil then -- this is a hinged door
-			if door.previous_move == "deosil" then
-				door_moved = rotate_door(door, 1)
-			elseif door.previous_move == "widdershins" then
-				door_moved = rotate_door(door, -1)
-			end
-
-			if not door_moved then
-				if door.previous_move == "deosil" then
-					door.previous_move = "widdershins"
+			elseif door.hinge ~= nil then
+				if door.swings[1] and not (door.swings[-1] and door.previous_move == "deosil") then
+					moving_direction = "widdershins"
 				else
-					door.previous_move = "deosil"
+					moving_direction = "deosil"
 				end
+			end
+		end
+
+		if door.can_slide and door.can_slide[moving_direction] then
+			slide_gate(door, moving_direction)
+			door_moved = true
+		elseif door.hinge ~= nil then -- this is a hinged door
+			if moving_direction == "deosil" then
+				door_moved = rotate_door(door, 1)
+			elseif moving_direction == "widdershins" then
+				door_moved = rotate_door(door, -1)
 			end
 		end
 
 		for _, door_node in pairs(door.all) do
 			minetest.set_node(door_node.pos, door_node.node)
-			minetest.get_meta(door_node.pos):set_string("previous_move", door.previous_move)
+			minetest.get_meta(door_node.pos):set_string("previous_move", moving_direction)
 		end
 
 		if door_moved then
@@ -437,7 +429,7 @@ castle_gates.process_gate = function(pos, node, player)
 				-- Get current player ObjectRef (nil when gone)
 				if door.all[1] then -- Prevent crashes if gate got deleted (e.g. worldedit)
 					castle_gates.process_gate(door.all[1].pos, door.all[1].node,
-						minetest.get_player_by_name(player_name))
+						minetest.get_player_by_name(player_name), moving_direction)
 				end
 			end, player:get_player_name())
 		end
