@@ -1,5 +1,33 @@
--- Given a facedir, returns a set of all the corresponding directions
-local get_dirs = function(facedir)
+-- we use the upper 3 bits of param2 to store the last moving direction
+-- lower 5 bits are reserved for the rotation
+local param2s_to_moving_directions = {
+	[0x00] = nil,			-- 000 00000 uninitialised
+	[0x20] = "top",			-- 001 00000
+	[0x40] = "bottom",		-- 010 00000
+	[0x60] = "left",		-- 011 00000
+	[0x80] = "right",		-- 100 00000
+	[0xA0] = "deosil",		-- 101 00000
+	[0xC0] = "widdershins",	-- 110 00000
+	-- [0xE0] = "blocked",  -- 111 00000
+}
+
+local moving_directions_to_param2s = table.key_value_swap(param2s_to_moving_directions)
+
+local param2_to_facedir = function (p2)
+	return bit.band(p2, 0x1F)
+end
+
+local param2_to_moving_direction = function (p2)
+	return param2s_to_moving_directions[bit.band(p2, 0xE0)]
+end
+
+local apply_moving_direction = function (p2, new_dir)
+	return moving_directions_to_param2s[new_dir] + param2_to_facedir(p2)
+end
+
+-- Given a param2, returns a set of all the corresponding directions
+local get_dirs = function(param2)
+	local facedir = param2_to_facedir(param2)
 	local dirs = {}
 	local top = {[0]={x=0, y=1, z=0},
 		{x=0, y=0, z=1},
@@ -118,9 +146,8 @@ local get_buildable_to = function(pos)
 	return def and def.buildable_to
 end
 
-
-local get_door_layout = function(pos, facedir, player)
-	if facedir > 23 then
+local get_door_layout = function(pos, param2, player)
+	if param2_to_facedir(param2) > 23 then
 		--[[ A bug in another mod once resulted in bad param2s being written to nodes, this will at least prevent
 		     crashes if something like that happens again.]]
 		return nil
@@ -135,8 +162,8 @@ local get_door_layout = function(pos, facedir, player)
 
 	door.all = {}
 	door.contains_protected_node = false
-	door.directions = get_dirs(facedir)
-	door.previous_move = minetest.get_meta(pos):get_string("previous_move")
+	door.directions = get_dirs(param2)
+	door.previous_move = param2_to_moving_direction(param2)
 
 	-- temporary pointsets used while searching
 	local to_test = {}
@@ -168,7 +195,7 @@ local get_door_layout = function(pos, facedir, player)
 			can_slide_to[test_pos_hash] = true
 		end
 
-		if test_node_def.paramtype2 == "facedir" and test_node.param2 <= 23 then
+		if test_node_def.paramtype2 == "facedir" and param2_to_facedir(test_node.param2) <= 23 then
 			-- prospective door nodes need to be of type facedir and have a valid param2
 			local test_node_dirs = get_dirs(test_node.param2)
 			-- the "back" vector needs to point in the same direction as the rest of the door
@@ -356,13 +383,10 @@ local rotate_door = function (door, direction)
 
 	for _, door_node in pairs(door.all) do
 		door_node.pos = rotate_pos_displaced(door_node.pos, origin, axis, direction)
-		door_node.node.param2 = facedir_rotate[axis][direction][door_node.node.param2]
+		door_node.node.param2 = facedir_rotate[axis][direction][param2_to_facedir(door_node.node.param2)]
 	end
 	return true
 end
-
-
-
 
 castle_gates.process_gate = function(pos, node, player, moving_direction)
 	if not player or not player:get_pos() then
@@ -420,8 +444,8 @@ castle_gates.process_gate = function(pos, node, player, moving_direction)
 		end
 
 		for _, door_node in pairs(door.all) do
+			door_node.node.param2 = apply_moving_direction(door_node.node.param2, moving_direction)
 			minetest.set_node(door_node.pos, door_node.node)
-			minetest.get_meta(door_node.pos):set_string("previous_move", moving_direction)
 		end
 
 		if door_moved then

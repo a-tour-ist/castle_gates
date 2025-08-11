@@ -16,8 +16,10 @@ stds.minetest = {
 		table = {
 			fields = {
 				"copy",
+				"key_value_swap",
 			},
 		},
+		"bit",
 	}
 }
 
