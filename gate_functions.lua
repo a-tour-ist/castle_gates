@@ -424,7 +424,7 @@ castle_gates.process_gate = function(pos, node, player, moving_direction)
 					end
 				end
 			elseif door.hinge ~= nil then
-				if door.swings[1] and not (door.swings[-1] and door.previous_move == "deosil") then
+				if door.swings[-1] and not (door.swings[1] and door.previous_move == "deosil") then
 					moving_direction = "widdershins"
 				else
 					moving_direction = "deosil"
