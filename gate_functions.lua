@@ -368,12 +368,16 @@ end
 
 local slide_gate = function(door, direction)
 	for _, door_node in pairs(door.all) do
+		minetest.set_node(door_node.pos, {name="air"})
 		door_node.pos = vector.add(door_node.pos, door.directions[direction])
 	end
-	door.previous_move = direction
+	for _, door_node in pairs(door.all) do
+		door_node.node.param2 = apply_moving_direction(door_node.node.param2, direction)
+		minetest.set_node(door_node.pos, door_node.node)
+	end
 end
 
-local rotate_door = function (door, direction)
+local rotate_door = function (door, direction, direction_str)
 	if not door.swings[direction] then
 		return false
 	end
@@ -382,8 +386,11 @@ local rotate_door = function (door, direction)
 	local axis = door.hinge.axis
 
 	for _, door_node in pairs(door.all) do
+		minetest.set_node(door_node.pos, {name="air"})
 		door_node.pos = rotate_pos_displaced(door_node.pos, origin, axis, direction)
 		door_node.node.param2 = facedir_rotate[axis][direction][param2_to_facedir(door_node.node.param2)]
+		door_node.node.param2 = apply_moving_direction(door_node.node.param2, direction_str)
+		minetest.set_node(door_node.pos, door_node.node)
 	end
 	return true
 end
@@ -396,10 +403,6 @@ castle_gates.process_gate = function(pos, node, player, moving_direction)
 	local door = get_door_layout(pos, node.param2, player)
 
 	if door ~= nil then
-		for _, door_node in pairs(door.all) do
-			minetest.set_node(door_node.pos, {name="air"})
-		end
-
 		local door_moved = false
 		-- this door was just triggered
 		if not moving_direction then
@@ -437,15 +440,10 @@ castle_gates.process_gate = function(pos, node, player, moving_direction)
 			door_moved = true
 		elseif door.hinge ~= nil then -- this is a hinged door
 			if moving_direction == "deosil" then
-				door_moved = rotate_door(door, 1)
+				door_moved = rotate_door(door, 1, "deosil")
 			elseif moving_direction == "widdershins" then
-				door_moved = rotate_door(door, -1)
+				door_moved = rotate_door(door, -1, "widdershins")
 			end
-		end
-
-		for _, door_node in pairs(door.all) do
-			door_node.node.param2 = apply_moving_direction(door_node.node.param2, moving_direction)
-			minetest.set_node(door_node.pos, door_node.node)
 		end
 
 		if door_moved then
