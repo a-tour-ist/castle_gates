@@ -48,6 +48,27 @@ local get_dirs = function(param2)
 	return dirs
 end
 
+local edge_between = function (pos1, node1, nodedef1, pos2, node2, nodedef2)
+	if nodedef1._gate_edges then
+		local dirs = get_dirs(node1.param2)
+		for dir, offset in pairs(dirs) do
+			if nodedef1._gate_edges[dir] and vector.equals(vector.add(offset, pos1), pos2) then
+				return true
+			end
+		end
+	end
+	if nodedef2._gate_edges then
+		local dirs = get_dirs(node2.param2)
+		for dir, offset in pairs(dirs) do
+			if nodedef2._gate_edges[dir] and vector.equals(vector.add(offset, pos2), pos1) then
+				return true
+			end
+		end
+	end
+
+	return false
+end
+
 -- Returns the axis that dir points along
 local dir_to_axis = function(dir)
 	if dir.x ~= 0 then
@@ -77,6 +98,7 @@ local interpret_hinge = function(hinge_def, pos, node_dirs)
 	else
 		placement = pos
 	end
+	placement[axis] = 0
 
 	return axis, placement
 end
@@ -141,6 +163,21 @@ local rotate_pos_displaced = function(pos, origin, axis, direction)
 	return vector.add(newpos, origin)
 end
 
+local rotation_position_iterator = function (pos1, pos2, axis1, axis2)
+	local current_pos = vector.new(pos1)
+	local steps = vector.sign(vector.subtract(pos2, pos1))
+	return function ()
+		if current_pos[axis1] ~= pos2[axis1] then
+			current_pos[axis1] = current_pos[axis1] + steps[axis1]
+		elseif current_pos[axis2] ~= pos2[axis2] then
+			current_pos[axis2] = current_pos[axis2] + steps[axis2]
+		else
+			return nil
+		end
+		return current_pos
+	end
+end
+
 local get_buildable_to = function(pos)
 	local def = minetest.registered_nodes[minetest.get_node(pos).name]
 	return def and def.buildable_to
@@ -153,17 +190,140 @@ local get_door_layout = function(pos, param2, player)
 		return nil
 	end
 
-	-- This method does a flood-fill looking for all nodes that meet the following criteria:
+	-- This method does a depth-first-search for all nodes that meet the following criteria:
 	-- belongs to a "castle_gate" group
 	-- has the same "back" direction as the initial node
 	-- is accessible via up, down, left or right directions unless one of those directions goes through an edge that
 	-- one of the two nodes has marked as a gate edge
+
+	local start_node = minetest.get_node(pos)
+	local start_def = minetest.registered_nodes[start_node.name]
+	local group_value = start_def and start_def.groups.castle_gate
+	if group_value == nil then
+		-- seems like the door disappeared during the .after
+		return
+	end
+	local search_directions = get_dirs(start_node.param2)
+	search_directions.front = nil
+	search_directions.back = nil
+
+
 	local door = {}
 
-	door.all = {}
+	door.all = {{pos=pos, node=start_node}}
 	door.contains_protected_node = false
 	door.directions = get_dirs(param2)
 	door.previous_move = param2_to_moving_direction(param2)
+	door.can_slide = {top=true, bottom=true, left=true, right=true}
+
+
+	local stack = {pos}		-- all gatepositions where we haven't seen all neighbours
+	local seen = {[minetest.hash_node_position(pos)] = true}
+	-- edges with a gate behind might block a sliding direction when they are non part of the door
+	-- we can't know whether they are part of the door, so we check these positions once we know the whole door
+	local possible_movement_blockers = {
+		top = {},
+		bottom = {},
+		left = {},
+		right = {}
+	}
+
+	while #stack > 0 do
+		local current_pos = stack[#stack]
+		stack[#stack] = nil
+
+		local current_node = minetest.get_node(current_pos)
+		local current_nodedef = minetest.registered_nodes[current_node.name]
+
+		if current_nodedef._gate_hinge then
+			local node_directions = get_dirs(current_node.param2)
+			local axis, placement = interpret_hinge(current_nodedef._gate_hinge, current_pos, node_directions)
+			if door.hinge == nil then -- this is the first hinge we've encountered.
+				door.hinge = {axis=axis, placement=placement}
+			else
+				if door.hinge.axis ~= axis or not vector.equals(door.hinge.placement, placement) then
+					return
+				end
+			end
+		end
+
+		for dir, offset in pairs(search_directions) do
+			local search_pos = vector.add(current_pos, offset)
+			local hash = minetest.hash_node_position(search_pos)
+			if not seen[hash] then -- no continue :/
+				local search_node = minetest.get_node(search_pos)
+				local search_node_def = minetest.registered_nodes[search_node.name]
+				if search_node_def and search_node_def.groups.castle_gate == group_value then
+					if edge_between(current_pos, current_node, current_nodedef, search_pos, search_node, search_node_def) then
+						table.insert(possible_movement_blockers[dir], minetest.hash_node_position(search_pos))
+					else
+						table.insert(door.all, {pos=search_pos, node=search_node})
+						seen[hash] = true
+						table.insert(stack, search_pos)
+					end
+				elseif not get_buildable_to(search_pos) then
+					door.can_slide[dir] = false
+				end
+			end
+		end
+	end
+	if not door.hinge then
+		for dir, position_hashes in pairs(possible_movement_blockers) do
+			if door.can_slide[dir] then
+				for _, position_hash in ipairs(position_hashes) do
+					if not seen[position_hash] then
+						door.can_slide[dir] = false
+						break
+					end
+				end
+			end
+		end
+	else
+		door.can_slide = nil
+		door.swings = {
+			[1] = true,
+			[-1] = true
+		}
+		local dir1 = dir_to_axis(door.directions.back)
+		local dir2 = (
+				(dir1 ~= "x" and door.hinge.axis ~= "x" and "x") or
+				(dir1 ~= "y" and door.hinge.axis ~= "y" and "y") or
+				(dir1 ~= "z" and door.hinge.axis ~= "z" and "z")
+		)
+
+		for _, part in ipairs(door.all) do
+			local pos1 = part.pos
+			if door.swings[1] then
+				local pos2 = rotate_pos_displaced(pos1, door.hinge.placement, door.hinge.axis, 1)
+				for check_pos in rotation_position_iterator(pos1, pos2, dir1, dir2) do
+					if not get_buildable_to(check_pos) then
+						door.swings[1] = false
+						if not door.swings[-1] then
+							-- door can't move, no need to check other positions
+							return door
+						end
+						break
+					end
+				end
+			end
+			if door.swings[-1] then
+				local pos2 = rotate_pos_displaced(pos1, door.hinge.placement, door.hinge.axis, -1)
+				for check_pos in rotation_position_iterator(pos1, pos2, dir1, dir2) do
+					if not get_buildable_to(check_pos) then
+						door.swings[-1] = false
+						if not door.swings[1] then
+							-- door can't move, no need to check other positions
+							return door
+						end
+						break
+					end
+				end
+			end
+		end
+	end
+
+
+	--[[
 
 	-- temporary pointsets used while searching
 	local to_test = {}
@@ -236,7 +396,7 @@ local get_door_layout = function(pos, param2, player)
 				can_slide_to[test_pos_hash] = true
 
 				local test_directions = {"top", "bottom", "left", "right"}
-				for _, dir in pairs(test_directions) do
+				for _, dir in ipairs(test_directions) do
 					local adjacent_pos = vector.add(test_pos, door.directions[dir])
 					local adjacent_node = minetest.get_node(adjacent_pos)
 					local adjacent_def = minetest.registered_nodes[adjacent_node.name]
@@ -288,7 +448,7 @@ local get_door_layout = function(pos, param2, player)
 	if door.hinge == nil then
 		--sliding door, evaluate which directions it can go
 		door.can_slide = {top=true, bottom=true, left=true, right=true}
-		for _,door_node in pairs(door.all) do
+		for _,door_node in ipairs(door.all) do
 			door.can_slide.top = door.can_slide.top and can_slide_to[
 				minetest.hash_node_position(vector.add(door_node.pos, door.directions.top))
 			]
@@ -311,9 +471,9 @@ local get_door_layout = function(pos, param2, player)
 
 		door.swings = {}
 
-		for _, direction in pairs({-1, 1}) do
+		for direction = -1, 1, 2 do
 			door.swings[direction] = true
-			for _, door_node in pairs(door.all) do
+			for _, door_node in ipairs(door.all) do
 				origin[axis] = door_node.pos[axis]
 				if not vector.equals(door_node.pos, origin) then
 					-- There's no obstruction if the node is literally located along the rotation axis
@@ -362,16 +522,17 @@ local get_door_layout = function(pos, param2, player)
 			end
 		end
 	end
+	--]]
 	return door
 end
 
 
 local slide_gate = function(door, direction)
-	for _, door_node in pairs(door.all) do
+	for _, door_node in ipairs(door.all) do
 		minetest.set_node(door_node.pos, {name="air"})
 		door_node.pos = vector.add(door_node.pos, door.directions[direction])
 	end
-	for _, door_node in pairs(door.all) do
+	for _, door_node in ipairs(door.all) do
 		door_node.node.param2 = apply_moving_direction(door_node.node.param2, direction)
 		minetest.set_node(door_node.pos, door_node.node)
 	end
@@ -385,7 +546,7 @@ local rotate_door = function (door, direction, direction_str)
 	local origin = door.hinge.placement
 	local axis = door.hinge.axis
 
-	for _, door_node in pairs(door.all) do
+	for _, door_node in ipairs(door.all) do
 		minetest.set_node(door_node.pos, {name="air"})
 		door_node.pos = rotate_pos_displaced(door_node.pos, origin, axis, direction)
 		door_node.node.param2 = facedir_rotate[axis][direction][param2_to_facedir(door_node.node.param2)]
